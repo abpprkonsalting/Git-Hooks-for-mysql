@@ -1,0 +1,101 @@
+#!/bin/bash
+# Copyright (c) 2018 Armando Baños Pascual <abpprkonsalting@gmail.com>
+# This script is licensed under GNU GPL version 2.0 or above
+# 
+# Author Armando Baños Pascual <abpprkonsalting@gmail.com>
+# Based on original work by: Vivek Gite <vivek@nixcraft.com>, Peter Geil <code@petergeil.name> @ nixCraft project <http://cyberciti.biz/fb/>
+# ------------------------------------------------------------
+#
+
+# The objective of this script is to be used in a git repository as a hook, checking for changes in a mysql db each time a commit is made (using post-commit hook and ammending last commit).
+# If there have been changes in the db, the script generates a mysql dump file with those changes and incorporate them in the commit.
+#
+# This version is based in the use of DBDIff CLI - Database Diff Command Line Interface <https://github.com/DBDiff/DBDiff>, which is a project that create mysql
+# up and down SQL dump scripts for versioning mysql DB migrations.
+#
+# How it works:
+# 
+# 1- Check inputs.
+#   1.1 - Make sure you can connect to local db server.
+#   1.2- Make sure database exists.
+# Check if a the temporary db exists in the server with a name as stablished by the rules of the system (something like <real-db-name>[gen-mysql-migr]). -- Requiered step.
+# 2- Check if inside that temporary db exists some kind of marking (certain value in a row on an especific table) that helps the correct identification of
+#   the temporary db as part of the system. 
+
+if [ -e ".post-commit-running" ]; then
+    rm -f .post-commit-running
+    _lastcommit=$(git log --pretty=format:'%h' -n 1)
+    echo $_lastcommit;
+    exit
+fi
+
+# General Variables:
+_usr="root"
+#_pass=""                   # Not recommended to store the password here, it's better to use my.cnf as especified in mysql documentation. Anyway the option is given to the user.
+_host="localhost"
+_db="d02bcad8"
+_tmpdb=${_db}_mysql_migr_tmp_db
+_migrations_path="DB/"
+_dbdiff="../DBDiff/dbdiff"    #Location of the dbdiff program
+_dbdiff_conf="./dbdiff.conf"             #Location of the dbdiff configuration file (this file contains credentials, so it should be keep in a secure location)
+
+#### No editing below #####
+
+_lastcommit=$(git log --pretty=format:'%h' -n 1)
+echo $_lastcommit;
+
+##### Step 1: Check input values and get info about the original db ####
+
+# 1.1- Make sure you can connect to local db server
+#TODO: Check that the user provided have the adecuate rights on the server.
+
+mysqladmin -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host"  ping &>/dev/null || { echo "Error: Mysql server is not online or set correct values for _usr, _pass, and _host"; exit 1; }
+echo "Check: Connection to mysql server...";
+
+# 1.2- Make sure original DB exists
+
+mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -N -B  -e'show databases;' | grep -q "^${_db}$" ||  { echo "Error: Database $_db not found."; exit 2; }
+echo "Check: Database $_db exists...";
+
+# 1.3- Get collation info
+_collation=$(mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -e "USE ${_db};SELECT @@collation_database;" | sed '/^+/ d' | sed '/^@@/ d')
+
+#### Step 2: If temporal db does not exists, create it ####
+mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -N -B  -e'show databases;' | grep -q "^$_tmpdb$" || {
+    mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -e "create database IF NOT EXISTS $_tmpdb COLLATE = ${_collation};" ||  { echo "Error: Could create database $_tmpdb"; exit 3; }
+    echo "Task: Creating temporal database for first time..."
+}
+echo "Check: Temporal database created or already existed..."
+
+#### Step 3: Compare dbs and save the migration ####
+
+${_dbdiff} "server1.${_db}:server2.$_tmpdb" "--config=$_dbdiff_conf" "--output=${_migrations_path}${_lastcommit}.sql"
+
+#### Step 4: If the migration exist ammend the commit and save the last state of the real db to the temporal one ####
+
+if [ -e "${_migrations_path}${_lastcommit}.sql" ]; then
+
+    touch .post-commit-running
+    touch .migration-added
+    echo "Task: Ammending commit"
+    git add "${_migrations_path}${_lastcommit}.sql"
+    git commit --amend -C HEAD
+    #--no-verify
+
+    mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -e "DROP DATABASE $_tmpdb; " ||  { echo "Error: Could not drop database $_tmpdb"; exit 4; }
+    mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" -e "create database IF NOT EXISTS $_tmpdb  COLLATE = ${_collation}; " ||  { echo "Error: Could recreate database $_tmpdb"; exit 4; }
+
+    echo "*** Coping $_db to temporal db..."
+    mysqldump -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" "$_db" | mysql -u "$_usr" ${_pass:+"-p "}${_pass} -h "$_host" "$_tmpdb"
+
+fi
+
+if [ -e ".migration-added" ]; then
+_lastcommit1=$(git log --pretty=format:'%h' -n 1)
+echo "último: "$_lastcommit1;
+cp "${_migrations_path}${_lastcommit}.sql" "${_migrations_path}${_lastcommit1}.sql"
+git rm "${_migrations_path}${_lastcommit}.sql"
+git add "${_migrations_path}${_lastcommit1}.sql"
+touch .post-commit-running
+git commit --amend -C HEAD
+fi

@@ -1,0 +1,12 @@
+server1:
+ user: 
+ password: 
+ port: 3306
+ host: localhost
+server2:
+ user: 
+ password: 
+ port: 3306
+ host: localhost
+type: all
+include: all

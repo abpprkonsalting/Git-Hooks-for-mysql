@@ -1,0 +1,15 @@
+#!/bin/bash
+# Copyright (c) 2018 Armando Baños Pascual <abpprkonsalting@gmail.com>
+# This script is licensed under GNU GPL version 2.0 or above
+# 
+# Author Armando Baños Pascual <abpprkonsalting@gmail.com>
+# Based on original work by: Vivek Gite <vivek@nixcraft.com>, Peter Geil <code@petergeil.name> @ nixCraft project <http://cyberciti.biz/fb/>
+# ------------------------------------------------------------
+#
+
+echo "entering pre-commit"
+if [ -e ".post-commit-running" ]; then
+_lastcommit=$(git log --pretty=format:'%h' -n 1)
+echo $_lastcommit;
+exit
+fi
